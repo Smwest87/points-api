@@ -1,0 +1,18 @@
+version: "1.0.0"
+services:
+  postgres:
+    image: "postgres"
+    container_name: points-store
+    ports:
+      - "9000:5432"
+    environment:
+      - POSTGRES_PASSWORD=docker
+      - POSTGRES_HOST_AUTH_METHOD=trust
+  webserver:
+    container_name: points-api
+    image: points-api
+    build:
+      context: .
+      args:
+        - GITHUB_TOKEN
+    command: "/points-api"
