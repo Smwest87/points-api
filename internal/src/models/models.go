@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"io"
@@ -91,7 +92,6 @@ func (h *Handler) SpendPoints(w http.ResponseWriter, r *http.Request) {
 	var pointsToSpend PointsPayload
 	err = json.Unmarshal(body, &pointsToSpend)
 	if err != nil {
-		fmt.Println("Unmarshall pointsTospend Failure")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
 		jsonErr := ErrorResponse{
@@ -104,9 +104,8 @@ func (h *Handler) SpendPoints(w http.ResponseWriter, r *http.Request) {
 
 	payerPointsSpent, err := SpendPoints(h.CTX, h.DB, pointsToSpend.Points)
 	if err != nil {
-		fmt.Println("SpendPoints error")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusForbidden)
 		jsonErr := ErrorResponse{
 			Success: false,
 			Error:   err.Error(),
@@ -160,7 +159,13 @@ func (h *Handler) AddPoints(w http.ResponseWriter, r *http.Request) {
 }
 
 func AddPoints(ctx context.Context, db *pgxpool.Pool, transaction PointsItem) error {
-	_, err := db.Exec(ctx, "INSERT INTO points_api.point_transactions (payer, points,created_at, remainder) VALUES ($1, $2, $3, $4)", transaction.Payer, transaction.Points, time.Now(), transaction.Points)
+	var remainder int
+	if transaction.Points < 0 {
+		remainder = 0
+	} else {
+		remainder = transaction.Points
+	}
+	_, err := db.Exec(ctx, "INSERT INTO points_api.point_transactions (payer, points,created_at, remainder) VALUES ($1, $2, $3, $4)", transaction.Payer, transaction.Points, time.Now(), remainder)
 	if err != nil {
 		return err
 	}
@@ -168,58 +173,43 @@ func AddPoints(ctx context.Context, db *pgxpool.Pool, transaction PointsItem) er
 }
 
 func SpendPoints(ctx context.Context, db *pgxpool.Pool, points int) ([]PointsItem, error) {
-	fmt.Println("Entering spent points")
-	availablePoints := 0
 	var spentPoints []PointsItem
 	rows, err := db.Query(ctx, "SELECT id, payer, remainder, CAST(created_at AS TEXT)  from points_api.point_transactions WHERE remainder > 0 ORDER BY created_at ASC;")
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("Printing points %d", points)
-	for availablePoints <= points {
+	for 0 < points {
 		transaction, err := db.Begin(ctx)
-		fmt.Println("Begin transaction")
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			fmt.Println("Scanning rows")
 			row := TransactionResponse{}
 			err := rows.Scan(&row.ID, &row.Payer, &row.Remainder, &row.CreatedAt)
-			fmt.Println("After Scan")
 			if err != nil {
-				fmt.Println("Error scanning rows")
 				return nil, err
 			}
 
-			fmt.Printf("Points: %d\nRemainder: %d\n", points, row.Remainder)
-
 			if points-row.Remainder < 1 {
-				fmt.Println("Points < 1")
 				spentPoints = append(spentPoints, PointsItem{
 					Payer:  row.Payer,
-					Points: row.Remainder - points,
+					Points: points - (points * 2),
 				})
-				availablePoints = availablePoints + row.Remainder - points
-				fmt.Println("Before transaction EXEC for updating DB")
 				_, err = transaction.Exec(ctx, "UPDATE points_api.point_transactions SET remainder=$1::int, updated_at=Now() WHERE id = $2::int", row.Remainder-points, row.ID)
 				if err != nil {
 					transaction.Rollback(ctx)
 					return nil, err
 				}
-				fmt.Println("Commiting transaction")
 				transaction.Commit(ctx)
 				return spentPoints, nil
 			} else if row.Remainder-points < 1 {
-				fmt.Println("entering remainder-points")
 				spentPoints = append(spentPoints, PointsItem{
 					Payer:  row.Payer,
-					Points: row.Remainder,
+					Points: row.Remainder - (row.Remainder * 2),
 				})
-				availablePoints = availablePoints + row.Remainder
+				points = points - row.Remainder
 				_, err = transaction.Exec(ctx, "UPDATE points_api.point_transactions SET remainder=0, updated_at=Now() WHERE id = $1", row.ID)
 				if err != nil {
-					fmt.Println("Entering rollback")
 					transaction.Rollback(ctx)
 					return nil, err
 				}
@@ -228,6 +218,44 @@ func SpendPoints(ctx context.Context, db *pgxpool.Pool, points int) ([]PointsIte
 
 		}
 
+		err = errors.New("not enough available points")
+		return nil, err
+
 	}
 	return spentPoints, nil
+}
+
+func (h *Handler) GetBalance(w http.ResponseWriter, r *http.Request) {
+	payerBalances, err := GetBalance(h.CTX, h.DB)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		jsonErr := ErrorResponse{
+			Success: false,
+			Error:   err.Error(),
+		}
+		json.NewEncoder(w).Encode(jsonErr)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(payerBalances)
+}
+
+func GetBalance(ctx context.Context, db *pgxpool.Pool) ([]PointsItem, error) {
+	var payerBalances []PointsItem
+	rows, err := db.Query(ctx, "select payer, sum(remainder) from points_api.point_transactions GROUP BY payer;")
+	if err != nil {
+		return nil, err
+	}
+
+	for rows.Next() {
+		balance := PointsItem{}
+		err := rows.Scan(&balance.Payer, &balance.Points)
+		if err != nil {
+			return nil, err
+		}
+		payerBalances = append(payerBalances, balance)
+	}
+	return payerBalances, nil
 }

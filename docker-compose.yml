@@ -1,16 +1,28 @@
 version: "1.0.0"
 services:
-  postgres:
+  database:
     image: "postgres"
     container_name: points-store
     ports:
       - "9000:5432"
+    volumes:
+      - ./internal/src/sql/setup.sql:/docker-entrypoint-initdb.d/init_db.sql
     environment:
       - POSTGRES_PASSWORD=docker
       - POSTGRES_HOST_AUTH_METHOD=trust
   webserver:
     container_name: points-api
+    environment:
+      - APP_ENV=development
+      - psql_URL=postgres://postgres:docker@database:5432/postgres
+      - max_db_connections=15
+      - max_idle_time=15
+      - HTTP_LISTEN_ADDR=:8080
+    depends_on:
+      - database
     image: points-api
+    ports:
+      - "8000:8080"
     build:
       context: .
       args:

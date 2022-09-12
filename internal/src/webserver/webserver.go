@@ -31,10 +31,11 @@ func Run(ctx context.Context, config models.Config) error {
 	//specify endpoints, handler functions and HTTP method
 	router.HandleFunc("/add-points", h.AddPoints).Methods("POST")
 	router.HandleFunc("/spend-points", h.SpendPoints).Methods("POST")
+	router.HandleFunc("/get-balance", h.GetBalance).Methods("GET")
 	http.Handle("/", router)
 
 	//start and listen to requests
-	http.ListenAndServe(":8080", router)
+	http.ListenAndServe(config.HttpListenAddr, router)
 
 	return nil
 
